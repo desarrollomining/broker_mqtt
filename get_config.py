@@ -1,3 +1,10 @@
+"""
+Se agrega un servidor y topico default en caso de que fallen las consultas
+
+"""
+
+
+
 
 from flask import Flask, jsonify, request
 import requests
@@ -8,13 +15,25 @@ app = Flask(__name__)
 STRAPI_DATALOGGERS_API = "http://0.0.0.0:1337/api/dataloggers"
 STRAPI_SENSORES_API = "http://0.0.0.0:1337/api/sensores"
 
-token = 'fd3c017eb295a0959b989d39b2613856c032a9b117ebb9432318133d7eab5d542dd40d5d84e6e18cd62b051e189ee28d2b89a686a9e3832bb5be9c53dbe395b04255d63d9c56a5e06f1e8493f27a240ec17003e864ec93465395b82dc141097d3d330c3a4e68182aa90a20c2a6191c4c513614cd16b4920d81eb0791a22a22d6'
+token = ''
+
+# Configuración predeterminada del servidor MQTT en caso de fallo
+DEFAULT_MQTT_CONFIG = {
+    "Servidor": "Desarrollo",
+    "pass": "Mining2015",
+    "puerto": "1883",
+    "user": "admin",
+    "web": "desarrollo.mine-360.com"
+}
+
+# Tópico predeterminado si falla la obtención de datos
+DEFAULT_TOPIC_FORMAT = "TallerStgo/dataloggers/STGO/{machine_name}"
 
 def fetch_data(url, params):
     """Función auxiliar para realizar la solicitud GET a la API."""
     try:
         app.logger.info(f"Haciendo solicitud GET a {url} con los parámetros: {params}")
-         # Configurar los encabezados con el token Bearer
+        # Configurar los encabezados con el token Bearer
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json"  # Asegúrate de que el tipo de contenido sea JSON si es necesario
@@ -36,7 +55,6 @@ def sensores():
         app.logger.warning("Parámetro 'uidmachine' no proporcionado en la solicitud.")
         return jsonify({"error": "UIDMachine parameter is required"}), 400
 
-    
     params = {
         "filters[UidMachine][$eq]": uid_machine,
         "fields[0]": "MachineName",
@@ -46,10 +64,7 @@ def sensores():
         "populate[sensor_estado][populate]": "servidor_mqtt"
     }
 
-
-
     data = fetch_data(STRAPI_SENSORES_API, params)
-    #print(data)
 
     if data == -1:
         return jsonify({"error": "Failed to fetch data from Strapi"}), 500
@@ -59,21 +74,40 @@ def sensores():
     if 'data' in data and data['data']:
         sensor_data = data['data'][0]
         attributes = sensor_data.get("attributes", {})
-        
+
+        # Obtener machine_name
         machine_name = attributes.get("MachineName", "N/A")
-        faena = attributes.get("faena", {}).get("data", {}).get("attributes", {}).get("Faena", "N/A")
-        faena_ubicacion = attributes.get("faena_ubicacion", {}).get("data", {}).get("attributes", {}).get("FaenaUbicacion", "N/A")
-        #servidor_mqtt = attributes.get("sensor_estado", {}).get("data", {}).get("attributes", {}).get("servidor_mqtt", {}).get("data", {}).get("attributes", {}).get("mqtt_topic", "N/A")
+        
+        # Obtener faena de manera segura
+        faena_data = attributes.get('faena')
+        faena = "N/A"
+        if faena_data and faena_data.get('data') and faena_data['data'].get('attributes'):
+            faena = faena_data['data']['attributes'].get('Faena', 'N/A')
+
+        # Obtener faena_ubicacion de manera segura
+        faena_ubicacion_data = attributes.get('faena_ubicacion')
+        faena_ubicacion = "N/A"
+        if faena_ubicacion_data and faena_ubicacion_data.get('data') and faena_ubicacion_data['data'].get('attributes'):
+            faena_ubicacion = faena_ubicacion_data['data']['attributes'].get('FaenaUbicacion', 'N/A')
+
+        # Obtener servidor_mqtt de manera segura
         servidor_mqtt_data = attributes.get("sensor_estado", {}).get("data", {}).get("attributes", {}).get("servidor_mqtt", {}).get("data", {}).get("attributes", {})
+        if not servidor_mqtt_data:
+            servidor_mqtt_data = DEFAULT_MQTT_CONFIG
         
         # Elimina lo que no usamos
         servidor_mqtt_data.pop("createdAt", None)
         servidor_mqtt_data.pop("updatedAt", None)
         servidor_mqtt_data.pop("publishedAt", None)
+
+        # Determinar el tópico a usar
+        if faena == "N/A" or faena_ubicacion == "N/A":
+            topic = f"TallerStgo/sensores/STGO/{machine_name}"
+            app.logger.info(f"Tópico predeterminado usado: {topic}")
+        else:
+            topic = f"{faena}/sensores/{faena_ubicacion}/{machine_name}"
+            app.logger.info(f"Tópico generado: {topic}")
         
-       
-        topic = f"{faena}/sensores/{faena_ubicacion}/{machine_name}"
-        app.logger.info(f"Tópico generado: {topic}")
         return jsonify({"topic": topic, "mqtt_topic": servidor_mqtt_data}), 200
 
     app.logger.warning(f"No se encontraron datos para el uidmachine: {uid_machine}")
@@ -97,7 +131,7 @@ def datalogger():
     }
 
     data = fetch_data(STRAPI_DATALOGGERS_API, params)
-    
+
     if data == -1:
         return jsonify({"error": "Failed to fetch data from Strapi"}), 500
 
@@ -106,23 +140,45 @@ def datalogger():
     if 'data' in data and data['data']:
         datalogger_data = data['data'][0]
         attributes = datalogger_data.get('attributes', {})
-        
+
+        # Obtener machine_name
         machine_name = attributes.get('MachineName', 'N/A')
-        faena = attributes.get('faena', {}).get('data', {}).get('attributes', {}).get('Faena', 'N/A')
-        faena_ubicacion = attributes.get('faena_ubicacion', {}).get('data', {}).get('attributes', {}).get('FaenaUbicacion', 'N/A')
+        
+        # Obtener faena de manera segura
+        faena_data = attributes.get('faena')
+        faena = "N/A"
+        if faena_data and faena_data.get('data') and faena_data['data'].get('attributes'):
+            faena = faena_data['data']['attributes'].get('Faena', 'N/A')
+
+        # Obtener faena_ubicacion de manera segura
+        faena_ubicacion_data = attributes.get('faena_ubicacion')
+        faena_ubicacion = "N/A"
+        if faena_ubicacion_data and faena_ubicacion_data.get('data') and faena_ubicacion_data['data'].get('attributes'):
+            faena_ubicacion = faena_ubicacion_data['data']['attributes'].get('FaenaUbicacion', 'N/A')
+
+        # Obtener servidor_mqtt de manera segura
         servidor_mqtt_data = attributes.get("datalogger_estado", {}).get("data", {}).get("attributes", {}).get("servidor_mqtt", {}).get("data", {}).get("attributes", {})
+        if not servidor_mqtt_data:
+            servidor_mqtt_data = DEFAULT_MQTT_CONFIG
         
         # Elimina lo que no usamos
         servidor_mqtt_data.pop("createdAt", None)
         servidor_mqtt_data.pop("updatedAt", None)
         servidor_mqtt_data.pop("publishedAt", None)
 
-        topic = f"{faena}/dataloggers/{faena_ubicacion}/{machine_name}"
-        app.logger.info(f"Tópico generado: {topic}")
+        # Determinar el tópico a usar
+        if faena == "N/A" or faena_ubicacion == "N/A":
+            topic = f"TallerStgo/dataloggers/STGO/{machine_name}"
+            app.logger.info(f"Tópico predeterminado usado: {topic}")
+        else:
+            topic = f"{faena}/dataloggers/{faena_ubicacion}/{machine_name}"
+            app.logger.info(f"Tópico generado: {topic}")
+        
         return jsonify({"topic": topic, "mqtt_topic": servidor_mqtt_data}), 200
 
     app.logger.warning(f"No se encontraron datos para el machineid: {machine_id}")
     return jsonify({"error": "No data found for the specified machine name"}), 404
+
 
 # Iniciar el servidor Flask
 if __name__ == '__main__':
